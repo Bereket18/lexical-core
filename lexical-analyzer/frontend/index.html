@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lexical Analyzer</title>
+
+<!-- No build step needed: React + Babel (in-browser JSX transform) + Monaco,
+     all loaded from CDN. Open this file directly, or serve it with any
+     static file server -- see README.md for setup instructions. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-soft: rgba(88, 166, 255, 0.12);
+    --danger: #f85149;
+    --success: #3fb950;
+
+    --c-keyword: #c792ea;
+    --c-identifier: #82aaff;
+    --c-operator: #f78c6c;
+    --c-number: #f9e2af;
+    --c-string: #e9b3c2;
+    --c-delimiter: #8b949e;
+    --c-comment: #6e7681;
+    --c-preprocessor: #ff9e64;
+    --c-error: #f85149;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  #root { min-height: 100vh; }
+
+  .app { max-width: 1280px; margin: 0 auto; padding: 24px 20px 60px; }
+
+  header.top { margin-bottom: 20px; }
+  header.top h1 { font-size: 22px; margin: 0 0 4px; }
+  header.top p { margin: 0; color: var(--muted); font-size: 13.5px; }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+
+  .toolbar label { font-size: 12.5px; color: var(--muted); margin-right: 6px; }
+
+  select, input[type=text], button {
+    background: #0d1117;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13.5px;
+  }
+
+  select:focus, input[type=text]:focus { outline: 1px solid var(--accent); }
+
+  button {
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #04101f;
+    font-weight: 600;
+    padding: 7px 18px;
+  }
+  button.primary:hover:not(:disabled) { background: #71b4ff; }
+
+  .spacer { flex: 1; }
+
+  .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+
+  .file-input-wrap { position: relative; overflow: hidden; }
+  .file-input-wrap input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+
+  .pane {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pane-header {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  #editor-container { height: 460px; width: 100%; }
+
+  .results-body { height: 460px; overflow-y: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: left;
+    position: sticky; top: 0;
+    background: #1c2128;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+    font-weight: 600;
+  }
+  tbody td { padding: 6px 10px; border-bottom: 1px solid #21262d; }
+  tbody tr:hover { background: #1c2128; }
+
+  .lexeme-cell { font-family: "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+
+  .badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .badge.KEYWORD { color: var(--c-keyword); background: rgba(199,146,234,0.12); }
+  .badge.IDENTIFIER { color: var(--c-identifier); background: rgba(130,170,255,0.12); }
+  .badge.OPERATOR { color: var(--c-operator); background: rgba(247,140,108,0.12); }
+  .badge.NUMBER { color: var(--c-number); background: rgba(249,226,175,0.12); }
+  .badge.STRING { color: var(--c-string); background: rgba(233,179,194,0.12); }
+  .badge.DELIMITER { color: var(--c-delimiter); background: rgba(139,148,158,0.12); }
+  .badge.COMMENT { color: var(--c-comment); background: rgba(110,118,129,0.12); }
+  .badge.PREPROCESSOR { color: var(--c-preprocessor); background: rgba(255,158,100,0.12); }
+  .badge.ERROR { color: var(--c-error); background: rgba(248,81,73,0.16); }
+
+  .summary-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .summary-bar strong { color: var(--text); }
+  .summary-bar .errors-positive { color: var(--danger); font-weight: 700; }
+  .summary-bar .errors-zero { color: var(--success); font-weight: 700; }
+
+  .banner {
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13.5px;
+  }
+  .banner.error { background: rgba(248,81,73,0.12); border: 1px solid rgba(248,81,73,0.4); color: #ffb4ae; }
+  .banner.loading { background: var(--accent-soft); border: 1px solid rgba(88,166,255,0.4); color: #aed1ff; }
+
+  .empty-state { padding: 30px 14px; text-align: center; color: var(--muted); font-size: 13px; }
+
+  footer.note { margin-top: 18px; font-size: 12px; color: var(--muted); }
+  footer.note code { background: #1c2128; padding: 1px 5px; border-radius: 4px; }
+
+  /* Live highlighting injected into the Monaco editor as inline decorations */
+  .tok-KEYWORD { color: var(--c-keyword) !important; font-weight: 600; }
+  .tok-IDENTIFIER { color: var(--c-identifier) !important; }
+  .tok-OPERATOR { color: var(--c-operator) !important; }
+  .tok-NUMBER { color: var(--c-number) !important; }
+  .tok-STRING { color: var(--c-string) !important; }
+  .tok-DELIMITER { color: var(--c-delimiter) !important; }
+  .tok-COMMENT { color: var(--c-comment) !important; font-style: italic; }
+  .tok-PREPROCESSOR { color: var(--c-preprocessor) !important; }
+  .tok-ERROR { color: var(--c-error) !important; text-decoration: underline wavy var(--c-error); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+const LANGUAGES = [
+  { value: "auto", label: "Auto-detect" },
+  { value: "python", label: "Python" },
+  { value: "cpp", label: "C++" },
+  { value: "java", label: "Java" },
+  { value: "javascript", label: "JavaScript" },
+];
+
+const MONACO_LANGUAGE_ID = {
+  python: "python",
+  cpp: "cpp",
+  java: "java",
+  javascript: "javascript",
+};
+
+const SAMPLE_SNIPPETS = {
+  python: `def fibonacci(n):
+    # returns the nth Fibonacci number
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+total = fibonacci(10) ** 2
+print(f"total = {total}")
+`,
+  cpp: `#include <iostream>
+
+int factorial(int n) {
+    // simple recursive factorial
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+
+int main() {
+    int x = 0x1F;
+    std::cout << "5! = " << factorial(5) << std::endl;
+    return 0;
+}
+`,
+  java: `public class Main {
+    public static void main(String[] args) {
+        int x = 0x1F;
+        System.out.println("value: " + x);
+        if (x >>> 1 == 0) { x--; }
+    }
+}
+`,
+  javascript: `const greet = (name) => {
+    // arrow function with a template literal
+    const msg = \`hello \${name}!\`;
+    console.log(msg ?? "no name given");
+};
+
+greet("world");
+`,
+};
+
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
+
+function App() {
+  const [code, setCode] = useState(SAMPLE_SNIPPETS.python);
+  const [language, setLanguage] = useState("auto");
+  const [detectedLanguage, setDetectedLanguage] = useState(null);
+  const [skipComments, setSkipComments] = useState(false);
+  const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND_URL);
+
+  const [tokens, setTokens] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [hasConverted, setHasConverted] = useState(false);
+
+  const containerRef = useRef(null);
+  const editorRef = useRef(null);
+  const monacoNsRef = useRef(null);
+  const decorationsRef = useRef([]);
+  const codeRef = useRef(code); // always-current value, read inside async handlers
+
+  useEffect(() => { codeRef.current = code; }, [code]);
+
+  // Boot Monaco once on mount.
+  useEffect(() => {
+    window.require.config({
+      paths: { vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs" },
+    });
+    window.require(["vs/editor/editor.main"], () => {
+      const editor = window.monaco.editor.create(containerRef.current, {
+        value: codeRef.current,
+        language: "python",
+        theme: "vs-dark",
+        automaticLayout: true,
+        minimap: { enabled: false },
+        fontSize: 13.5,
+        scrollBeyondLastLine: false,
+      });
+      editor.onDidChangeModelContent(() => setCode(editor.getValue()));
+      editorRef.current = editor;
+      monacoNsRef.current = window.monaco;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const clearDecorations = useCallback(() => {
+    if (editorRef.current) {
+      decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, []);
+    }
+  }, []);
+
+  const highlightTokens = useCallback((tokenList) => {
+    const editor = editorRef.current;
+    const ns = monacoNsRef.current;
+    if (!editor || !ns) return;
+    const decorations = tokenList.map((t) => {
+      const firstLine = t.lexeme.split("\n")[0];
+      const endColumn = t.column + Math.max(firstLine.length, 1);
+      return {
+        range: new ns.Range(t.line, t.column, t.line, endColumn),
+        options: { inlineClassName: `tok-${t.token_type}` },
+      };
+    });
+    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, decorations);
+  }, []);
+
+  const setEditorLanguageMode = useCallback((lang) => {
+    const editor = editorRef.current;
+    const ns = monacoNsRef.current;
+    if (editor && ns) {
+      ns.editor.setModelLanguage(editor.getModel(), MONACO_LANGUAGE_ID[lang] || "plaintext");
+    }
+  }, []);
+
+  async function handleConvert() {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const resp = await fetch(`${backendUrl}/tokenize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: codeRef.current, language, skip_comments: skipComments }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || `Request failed (HTTP ${resp.status})`);
+      setTokens(data.tokens || []);
+      setDetectedLanguage(data.language);
+      setHasConverted(true);
+      setEditorLanguageMode(data.language);
+      highlightTokens(data.tokens || []);
+    } catch (err) {
+      clearDecorations();
+      setErrorMsg(
+        err.message === "Failed to fetch"
+          ? `Could not reach the backend at ${backendUrl}. Is it running? (uvicorn app.main:app --reload)`
+          : err.message || String(err)
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleFileUpload(file) {
+    if (!file) return;
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("language", language);
+      form.append("skip_comments", String(skipComments));
+      const resp = await fetch(`${backendUrl}/tokenize-file`, { method: "POST", body: form });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || `Request failed (HTTP ${resp.status})`);
+
+      setTokens(data.tokens || []);
+      setDetectedLanguage(data.language);
+      setHasConverted(true);
+
+      if (typeof data.source === "string") {
+        setCode(data.source);
+        if (editorRef.current) editorRef.current.setValue(data.source);
+      }
+      setEditorLanguageMode(data.language);
+      highlightTokens(data.tokens || []);
+    } catch (err) {
+      clearDecorations();
+      setErrorMsg(
+        err.message === "Failed to fetch"
+          ? `Could not reach the backend at ${backendUrl}. Is it running?`
+          : err.message || String(err)
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function loadSample(lang) {
+    const sample = SAMPLE_SNIPPETS[lang] || SAMPLE_SNIPPETS.python;
+    setCode(sample);
+    if (editorRef.current) editorRef.current.setValue(sample);
+    clearDecorations();
+    setTokens([]);
+    setHasConverted(false);
+  }
+
+  const summary = useMemo(() => {
+    const counts = {};
+    for (const t of tokens) counts[t.token_type] = (counts[t.token_type] || 0) + 1;
+    return counts;
+  }, [tokens]);
+
+  const errorCount = summary.ERROR || 0;
+
+  return (
+    <div className="app">
+      <header className="top">
+        <h1>Web-Based Lexical Analyzer</h1>
+        <p>Paste code or upload a file, pick a language (or let it auto-detect), and convert.</p>
+      </header>
+
+      <div className="toolbar">
+        <div>
+          <label>Language</label>
+          <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+            {LANGUAGES.map((l) => (
+              <option key={l.value} value={l.value}>{l.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label>Sample</label>
+          <select defaultValue="" onChange={(e) => { if (e.target.value) loadSample(e.target.value); e.target.value = ""; }}>
+            <option value="">Load sample…</option>
+            <option value="python">Python</option>
+            <option value="cpp">C++</option>
+            <option value="java">Java</option>
+            <option value="javascript">JavaScript</option>
+          </select>
+        </div>
+
+        <button type="button" className="file-input-wrap">
+          📁 Upload file (.txt .py .cpp .java .js .docx)
+          <input
+            type="file"
+            accept=".txt,.py,.cpp,.cc,.cxx,.h,.hpp,.java,.js,.jsx,.docx"
+            onChange={(e) => handleFileUpload(e.target.files[0])}
+          />
+        </button>
+
+        <label className="checkbox-row">
+          <input type="checkbox" checked={skipComments} onChange={(e) => setSkipComments(e.target.checked)} />
+          Skip comments
+        </label>
+
+        <div className="spacer" />
+
+        <div>
+          <label>Backend URL</label>
+          <input
+            type="text"
+            value={backendUrl}
+            onChange={(e) => setBackendUrl(e.target.value)}
+            style={{ width: 190 }}
+          />
+        </div>
+
+        <button type="button" className="primary" onClick={handleConvert} disabled={loading}>
+          {loading ? "Converting…" : "Convert ▶"}
+        </button>
+      </div>
+
+      {errorMsg && <div className="banner error">⚠️ {errorMsg}</div>}
+      {loading && !errorMsg && <div className="banner loading">Tokenizing…</div>}
+
+      <div className="panes">
+        <div className="pane">
+          <div className="pane-header">
+            <span>Source</span>
+            <span>{detectedLanguage ? `detected: ${detectedLanguage}` : ""}</span>
+          </div>
+          <div id="editor-container" ref={containerRef}></div>
+        </div>
+
+        <div className="pane">
+          <div className="pane-header">
+            <span>Results</span>
+            <span>{tokens.length} token{tokens.length === 1 ? "" : "s"}</span>
+          </div>
+          <div className="results-body">
+            {!hasConverted ? (
+              <div className="empty-state">Click <strong>Convert</strong> to see the lexeme / token / line / column table here.</div>
+            ) : tokens.length === 0 ? (
+              <div className="empty-state">No tokens (empty input).</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Lexeme</th>
+                    <th>Token Type</th>
+                    <th>Line</th>
+                    <th>Column</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tokens.map((t, i) => (
+                    <tr key={i}>
+                      <td className="lexeme-cell">{t.lexeme}</td>
+                      <td><span className={`badge ${t.token_type}`}>{t.token_type}</span></td>
+                      <td>{t.line}</td>
+                      <td>{t.column}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {hasConverted && (
+            <div className="summary-bar">
+              <span><strong>{tokens.length}</strong> total</span>
+              {Object.keys(summary).sort().map((k) => (
+                <span key={k}>{k}: <strong>{summary[k]}</strong></span>
+              ))}
+              <span className={errorCount > 0 ? "errors-positive" : "errors-zero"}>
+                {errorCount > 0 ? `⚠ ${errorCount} error token(s)` : "✓ 0 errors"}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <footer className="note">
+        Backend not running? Start it with <code>cd backend &amp;&amp; uvicorn app.main:app --reload</code>, then
+        make sure the Backend URL above matches (default <code>{DEFAULT_BACKEND_URL}</code>).
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
